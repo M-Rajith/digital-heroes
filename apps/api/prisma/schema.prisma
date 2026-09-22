@@ -1,0 +1,263 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum PlanInterval {
+  MONTHLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+}
+
+enum DrawStatus {
+  DRAFT
+  SIMULATED
+  PUBLISHED
+  SETTLED
+}
+
+enum DrawType {
+  RANDOM
+  WEIGHTED
+}
+
+enum WinnerStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+  PAID
+}
+
+enum ProofStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subscriptions   Subscription[]
+  scores          Score[]
+  charitySelection CharitySelection?
+  drawEntries     DrawEntry[]
+  winners         Winner[]
+  payments        Payment[]
+  auditLogs       AuditLog[]
+
+  @@map("users")
+}
+
+model Subscription {
+  id                   String             @id @default(uuid())
+  userId               String
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan                 PlanInterval
+  status               SubscriptionStatus @default(INCOMPLETE)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?            @unique
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@index([userId, status])
+  @@index([status, currentPeriodEnd])
+  @@map("subscriptions")
+}
+
+model Score {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  value     Int
+  date      DateTime @db.Date
+  createdAt DateTime @default(now())
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@map("scores")
+}
+
+model Charity {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String
+  imageUrl    String?
+  website     String?
+  isFeatured  Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  selections CharitySelection[]
+  events     CharityEvent[]
+
+  @@map("charities")
+}
+
+model CharityEvent {
+  id        String   @id @default(uuid())
+  charityId String
+  charity   Charity  @relation(fields: [charityId], references: [id], onDelete: Cascade)
+  title     String
+  eventDate DateTime @db.Date
+  location  String?
+
+  @@map("charity_events")
+}
+
+model CharitySelection {
+  id         String  @id @default(uuid())
+  userId     String  @unique
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  charityId  String
+  charity    Charity @relation(fields: [charityId], references: [id])
+  percentage Int     @default(10)
+
+  @@map("charity_selections")
+}
+
+model Draw {
+  id              String     @id @default(uuid())
+  cycleKey        String     @unique // e.g. "2026-09"
+  type            DrawType   @default(RANDOM)
+  status          DrawStatus @default(DRAFT)
+  winningNumbers  Int[]      @default([])
+  simulatedNumbers Int[]     @default([])
+  publishedAt     DateTime?
+  // carried-in jackpot from previous unclaimed 5-match tier
+  jackpotCarryIn  Decimal    @default(0) @db.Decimal(12, 2)
+  // amount rolled OUT to next cycle (set when 5-match unclaimed)
+  jackpotRollover Decimal    @default(0) @db.Decimal(12, 2)
+  createdAt       DateTime   @default(now())
+
+  entries    DrawEntry[]
+  prizePool  PrizePool?
+  winners    Winner[]
+
+  @@map("draws")
+}
+
+model DrawEntry {
+  id        String   @id @default(uuid())
+  drawId    String
+  draw      Draw     @relation(fields: [drawId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  numbers   Int[]
+  weight    Decimal  @default(1) @db.Decimal(8, 4)
+  createdAt DateTime @default(now())
+
+  @@unique([drawId, userId])
+  @@index([drawId])
+  @@map("draw_entries")
+}
+
+model PrizePool {
+  id        String  @id @default(uuid())
+  drawId    String  @unique
+  draw      Draw    @relation(fields: [drawId], references: [id], onDelete: Cascade)
+  // amounts in minor units' major (e.g. rupees/dollars, 2dp)
+  tier5     Decimal @db.Decimal(14, 2)
+  tier4     Decimal @db.Decimal(14, 2)
+  tier3     Decimal @db.Decimal(14, 2)
+  currency  String  @default("usd")
+
+  @@map("prize_pools")
+}
+
+model Winner {
+  id          String       @id @default(uuid())
+  drawId      String
+  draw        Draw         @relation(fields: [drawId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier        Int // 5, 4, 3
+  matchCount  Int
+  amount      Decimal      @db.Decimal(14, 2)
+  status      WinnerStatus @default(PENDING_VERIFICATION)
+  paidAt      DateTime?
+  createdAt   DateTime     @default(now())
+
+  proof WinnerProof?
+
+  @@index([drawId, tier])
+  @@index([userId])
+  @@map("winners")
+}
+
+model WinnerProof {
+  id         String      @id @default(uuid())
+  winnerId   String      @unique
+  winner     Winner      @relation(fields: [winnerId], references: [id], onDelete: Cascade)
+  fileUrl    String
+  storagePath String
+  status     ProofStatus @default(PENDING)
+  reviewedBy String?
+  reviewedAt DateTime?
+  createdAt  DateTime    @default(now())
+
+  @@map("winner_proofs")
+}
+
+model Payment {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripePaymentId String?  @unique
+  amount          Decimal  @db.Decimal(12, 2)
+  currency        String   @default("usd")
+  status          String   @default("succeeded")
+  createdAt       DateTime @default(now())
+
+  @@map("payments")
+}
+
+// Idempotency for Stripe webhook delivery (at-least-once)
+model WebhookEvent {
+  id         String   @id // stripe event id (evt_...)
+  type       String
+  processedAt DateTime @default(now())
+
+  @@map("webhook_events")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  oldValue   Json?
+  newValue   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@map("audit_logs")
+}

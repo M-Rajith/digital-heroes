@@ -1,0 +1,157 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+  --glass-bg: rgba(255, 255, 255, 0.055);
+  --glass-bg-strong: rgba(255, 255, 255, 0.095);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --hairline: rgba(255, 255, 255, 0.08);
+  --accent: #0a84ff;
+}
+
+* { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  @apply bg-black text-white antialiased;
+  font-family: var(--font-body);
+  background-image:
+    radial-gradient(1100px 480px at 50% -12%, rgba(255,255,255,0.08), transparent 62%),
+    radial-gradient(800px 380px at 88% 4%, rgba(10,132,255,0.07), transparent 60%);
+  background-attachment: fixed;
+  letter-spacing: -0.011em;
+}
+
+h1, h2, h3, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.03em;
+}
+
+::selection { background: rgba(255,255,255,0.9); color: #000; }
+
+/* ---------- Glass surfaces ---------- */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(22px) saturate(170%);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.09),
+    0 24px 60px rgba(0,0,0,0.5);
+  transition: transform .25s cubic-bezier(.22,1,.36,1), border-color .25s ease, background .25s ease;
+}
+.glass.hoverable:hover, a:hover > .glass {
+  transform: translateY(-3px);
+  border-color: rgba(255,255,255,0.24);
+  background: var(--glass-bg-strong);
+}
+
+/* ---------- Type helpers ---------- */
+.grad-text {
+  background: linear-gradient(180deg, #ffffff 25%, rgba(255,255,255,0.5) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* ---------- Buttons (Apple pill) ---------- */
+.btn-primary {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  border-radius: 980px;
+  background: #fff; color: #000;
+  padding: .8rem 1.7rem;
+  font-weight: 600; font-size: .95rem; letter-spacing: -0.01em;
+  box-shadow: 0 10px 30px rgba(255,255,255,0.14);
+  transition: transform .2s cubic-bezier(.22,1,.36,1), box-shadow .2s ease, opacity .2s ease;
+  cursor: pointer;
+}
+.btn-primary:hover { transform: scale(1.035); box-shadow: 0 14px 40px rgba(255,255,255,0.2); }
+.btn-primary:active { transform: scale(0.97); }
+.btn-primary:disabled { opacity: .35; pointer-events: none; }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  border-radius: 980px;
+  color: #fff;
+  padding: .8rem 1.7rem;
+  font-weight: 600; font-size: .95rem; letter-spacing: -0.01em;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: transform .2s cubic-bezier(.22,1,.36,1), background .2s ease, border-color .2s ease, opacity .2s ease;
+  cursor: pointer;
+}
+.btn-ghost:hover { background: var(--glass-bg-strong); border-color: rgba(255,255,255,0.28); transform: scale(1.03); }
+.btn-ghost:active { transform: scale(0.97); }
+.btn-ghost:disabled { opacity: .35; pointer-events: none; }
+
+/* ---------- Inputs (frosted fields) ---------- */
+.input {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.045);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  padding: .8rem 1rem;
+  font-size: .95rem;
+  letter-spacing: -0.01em;
+  outline: none;
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+}
+.input::placeholder { color: rgba(255,255,255,0.35); }
+.input:focus {
+  border-color: rgba(255,255,255,0.4);
+  background: rgba(255,255,255,0.07);
+  box-shadow: 0 0 0 4px rgba(255,255,255,0.07);
+}
+
+/* ---------- Badge ---------- */
+.badge {
+  display: inline-flex; align-items: center; gap: .3rem;
+  border-radius: 980px;
+  padding: .3rem .85rem;
+  font-size: .75rem; font-weight: 500; letter-spacing: 0.01em;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px);
+}
+
+/* ---------- Draw number balls (monochrome glass) ---------- */
+.num-ball {
+  display: inline-flex;
+  height: 2.4rem; width: 2.4rem;
+  align-items: center; justify-content: center;
+  border-radius: 9999px;
+  border: 1px solid rgba(255,255,255,0.26);
+  background: rgba(255,255,255,0.06);
+  backdrop-filter: blur(10px);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600; font-size: .9rem;
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+}
+
+/* ---------- Scrollbar ---------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #000; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 8px; border: 2px solid #000; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+
+/* ---------- Accessibility ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
