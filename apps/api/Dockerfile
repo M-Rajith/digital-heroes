@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:20-bookworm-slim AS build
 WORKDIR /app
 COPY apps/api/package.json ./
 COPY packages/database/prisma ./prisma
@@ -7,7 +7,7 @@ RUN npx prisma generate --schema ./prisma/schema.prisma
 COPY apps/api ./
 RUN npm run build
 
-FROM node:20-alpine AS runtime
+FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY apps/api/package.json ./
