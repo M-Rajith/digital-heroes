@@ -12,18 +12,24 @@ export class PaymentsController {
   /**
    * Payment provider webhook — the SOURCE OF TRUTH for subscription state.
    * Provider is detected by which signature header arrives:
-   *   stripe-signature        -> Stripe
-   *   x-razorpay-signature    -> Razorpay (HMAC-SHA256, verified against raw body)
+   *   paypal-transmission-sig  -> PayPal (verified via PayPal's verify API)
+   *   x-razorpay-signature     -> Razorpay (HMAC-SHA256)
+   *   stripe-signature         -> Stripe
    * Delivery is at-least-once; events are deduplicated by provider event id.
    */
   @Public()
   @Post("webhook")
-  async webhook(
-    @Req() req: RawBodyRequest<Request>,
-    @Headers("stripe-signature") stripeSignature: string | undefined,
-    @Headers("x-razorpay-signature") razorpaySignature: string | undefined,
-  ) {
+  async webhook(@Req() req: RawBodyRequest<Request>) {
     if (!req.rawBody) throw new BadRequestException("Invalid webhook payload");
-    return this.payments.handleWebhook(req.rawBody, stripeSignature, razorpaySignature);
+    const h = req.headers as Record<string, string | undefined>;
+    return this.payments.handleWebhook(req.rawBody, {
+      "paypal-transmission-sig": h["paypal-transmission-sig"],
+      "paypal-auth-algo": h["paypal-auth-algo"],
+      "paypal-cert-url": h["paypal-cert-url"],
+      "paypal-transmission-id": h["paypal-transmission-id"],
+      "paypal-transmission-time": h["paypal-transmission-time"],
+      "x-razorpay-signature": h["x-razorpay-signature"],
+      "stripe-signature": h["stripe-signature"],
+    });
   }
 }

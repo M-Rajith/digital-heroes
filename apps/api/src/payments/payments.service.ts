@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Headers, Injectable, Logger } from "@nestjs/common";
 import { Prisma, SubscriptionStatus } from "@prisma/client";
 import { createHmac, timingSafeEqual } from "crypto";
 import Stripe from "stripe";
@@ -24,14 +24,87 @@ export class PaymentsService {
     private readonly subs: SubscriptionsService,
   ) {}
 
+  private paypalBase() {
+    return (process.env.PAYPAL_ENV ?? "sandbox") === "live"
+      ? "https://api-m.paypal.com"
+      : "https://api-m.sandbox.paypal.com";
+  }
+
   /**
    * Payment webhook — the SOURCE OF TRUTH for subscription state.
-   * Detects the provider from the signature header present on the request.
+   * Provider detected by signature headers:
+   *   paypal-transmission-sig  -> PayPal (verified via PayPal's verify API)
+   *   x-razorpay-signature     -> Razorpay (HMAC-SHA256)
+   *   stripe-signature         -> Stripe
    */
-  async handleWebhook(payload: Buffer, stripeSignature?: string, razorpaySignature?: string) {
-    if (razorpaySignature) return this.handleRazorpay(payload, razorpaySignature);
-    if (stripeSignature) return this.handleStripe(payload, stripeSignature);
+  async handleWebhook(
+    payload: Buffer,
+    headers: Record<string, string | undefined>,
+  ) {
+    if (headers["paypal-transmission-sig"]) return this.handlePaypal(payload, headers);
+    if (headers["x-razorpay-signature"]) return this.handleRazorpay(payload, headers["x-razorpay-signature"]!);
+    if (headers["stripe-signature"]) return this.handleStripe(payload, headers["stripe-signature"]);
     throw new BadRequestException("No webhook signature header present");
+  }
+
+  // ---------------- PayPal ----------------
+
+  private async handlePaypal(payload: Buffer, headers: Record<string, string | undefined>) {
+    const token = await this.subs.paypalToken();
+    const verifyRes = await fetch(`${this.paypalBase()}/v1/notifications/verify-webhook-signature`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        auth_algo: headers["paypal-auth-algo"],
+        cert_url: headers["paypal-cert-url"],
+        transmission_id: headers["paypal-transmission-id"],
+        transmission_sig: headers["paypal-transmission-sig"],
+        transmission_time: headers["paypal-transmission-time"],
+        webhook_id: process.env.PAYPAL_WEBHOOK_ID ?? "",
+        webhook_event: JSON.parse(payload.toString()),
+      }),
+    });
+    const verify = (await verifyRes.json()) as { verification_status?: string };
+    if (verify.verification_status !== "SUCCESS") {
+      this.logger.warn("PayPal webhook verification failed");
+      throw new BadRequestException("WEBHOOK_INVALID_SIGNATURE");
+    }
+
+    const event = JSON.parse(payload.toString()) as {
+      id: string;
+      event_type: string;
+      resource?: {
+        id?: string;
+        amount?: { value?: string; currency_code?: string };
+        supplementary_data?: { related_ids?: { order_id?: string } };
+      };
+    };
+
+    const seen = await this.prisma.webhookEvent.findUnique({ where: { id: event.id } });
+    if (seen) return { received: true, duplicate: true };
+    await this.prisma.webhookEvent.create({ data: { id: event.id, type: event.event_type } });
+
+    if (event.event_type === "PAYMENT.CAPTURE.COMPLETED" && event.resource?.id) {
+      const orderId = event.resource.supplementary_data?.related_ids?.order_id;
+      const existing = await this.prisma.subscription.findUnique({
+        where: { stripeSubscriptionId: orderId ?? "" },
+      });
+      if (existing) {
+        await this.prisma.payment.upsert({
+          where: { stripePaymentId: event.resource.id },
+          update: {},
+          create: {
+            userId: existing.userId,
+            stripePaymentId: event.resource.id,
+            amount: event.resource.amount?.value ?? "0",
+            currency: (event.resource.amount?.currency_code ?? "USD").toLowerCase(),
+            status: "succeeded",
+          },
+        });
+      }
+    }
+    this.logger.log(`PayPal webhook ${event.event_type} (${event.id})`);
+    return { received: true };
   }
 
   // ---------------- Razorpay ----------------
@@ -52,7 +125,6 @@ export class PaymentsService {
       payload?: { subscription?: { entity: RazorpaySubscriptionEntity } };
     };
 
-    // Idempotency: Razorpay may deliver the same event more than once.
     const seen = await this.prisma.webhookEvent.findUnique({ where: { id: event.id } });
     if (seen) return { received: true, duplicate: true };
     await this.prisma.webhookEvent.create({ data: { id: event.id, type: event.event } });
@@ -89,7 +161,7 @@ export class PaymentsService {
         create: {
           userId,
           stripeCustomerId: null,
-          stripeSubscriptionId: sub.id, // provider-neutral unique key
+          stripeSubscriptionId: sub.id,
           plan,
           status,
           currentPeriodEnd: periodEnd,

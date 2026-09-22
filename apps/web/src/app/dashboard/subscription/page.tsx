@@ -9,26 +9,52 @@ import { fmtDate } from "@/lib/format";
 
 export default function SubscriptionPage() {
   const [sub, setSub] = useState<any>(null);
+  const [msg, setMsg] = useState("");
   const params = useSearchParams();
-  const success = params.get("success");
 
-  useEffect(() => { api("/subscriptions/me").then(setSub).catch(() => {}); }, []);
+  useEffect(() => {
+    (async () => {
+      // PayPal redirect: ?paypal=success&token=<ORDER_ID>
+      if (params.get("paypal") === "success" && params.get("token")) {
+        try {
+          setMsg("Confirming your payment…");
+          await api("/subscriptions/paypal-capture", {
+            method: "POST",
+            body: JSON.stringify({ orderId: params.get("token") }),
+          });
+          setMsg("Payment confirmed — you are now an active subscriber.");
+        } catch (e: any) {
+          setMsg(`Payment confirmation failed: ${e.message}`);
+        }
+      }
+      try {
+        setSub(await api("/subscriptions/me"));
+      } catch { /* not logged in or network error */ }
+    })();
+  }, [params]);
 
   const active = sub?.status === "ACTIVE";
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Subscription</h1>
-      {success && (
-        <Card className="border-mint/40">
-          <p className="text-mint">Payment received — your subscription will activate as soon as Stripe confirms it (usually seconds).</p>
+
+      {params.get("success") && (
+        <Card className="border-white/25">
+          <p className="text-white/90">Payment received — your subscription activates as soon as the payment provider confirms it (usually seconds).</p>
         </Card>
       )}
+      {msg && (
+        <Card className="border-white/25">
+          <p className="text-white/90">{msg}</p>
+        </Card>
+      )}
+
       <Card>
         {sub ? (
           <>
             <div className="flex items-center justify-between">
               <p className="text-lg font-semibold">{sub.plan} plan</p>
-              <span className={`badge ${active ? "border-mint/40 bg-mint/10 text-mint" : "border-amber-500/40 bg-amber-500/10 text-amber-300"}`}>
+              <span className={`badge ${active ? "border-white/25 bg-white/10 text-white" : "border-white/15 text-white/60"}`}>
                 {sub.status}
               </span>
             </div>
@@ -38,7 +64,7 @@ export default function SubscriptionPage() {
           <p className="text-mist">No subscription yet.</p>
         )}
         <Link href="/pricing" className="btn-primary mt-4">
-          {active ? "Change plan" : "Subscribe"}
+          {active ? "Extend / renew plan" : "Subscribe"}
         </Link>
       </Card>
     </div>

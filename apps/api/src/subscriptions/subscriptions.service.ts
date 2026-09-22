@@ -1,14 +1,15 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { PlanInterval, SubscriptionStatus } from "@prisma/client";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { PlanInterval, Prisma, SubscriptionStatus } from "@prisma/client";
 import Stripe from "stripe";
 import { PrismaService } from "../common/prisma/prisma.service";
 import { AuthUser } from "../common/decorators/current-user.decorator";
 
 /**
- * Payment provider is selected by env vars:
- *   RAZORPAY_KEY_ID set  -> Razorpay hosted subscriptions (India-friendly)
- *   otherwise            -> Stripe Checkout + webhooks
- * Both paths end in the same DB state; the webhook is the source of truth.
+ * Payment provider auto-selection (PRD §04: "Stripe or equivalent"):
+ *   RAZORPAY_KEY_ID  -> Razorpay hosted subscriptions
+ *   PAYPAL_CLIENT_ID -> PayPal Orders (sandbox/live via PAYPAL_ENV)
+ *   otherwise        -> Stripe Checkout
+ * Every path funnels into the same subscription state machine.
  */
 @Injectable()
 export class SubscriptionsService {
@@ -16,6 +17,29 @@ export class SubscriptionsService {
   private stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "", { apiVersion: "2024-06-20" });
 
   constructor(private readonly prisma: PrismaService) {}
+
+  private paypalBase() {
+    return (process.env.PAYPAL_ENV ?? "sandbox") === "live"
+      ? "https://api-m.paypal.com"
+      : "https://api-m.sandbox.paypal.com";
+  }
+
+  async paypalToken(): Promise<string> {
+    const auth = Buffer.from(
+      `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`,
+    ).toString("base64");
+    const res = await fetch(`${this.paypalBase()}/v1/oauth2/token`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: "grant_type=client_credentials",
+    });
+    if (!res.ok) throw new BadRequestException(`PayPal auth failed: ${res.status}`);
+    const data = (await res.json()) as { access_token: string };
+    return data.access_token;
+  }
 
   async mySubscription(userId: string) {
     return this.prisma.subscription.findFirst({
@@ -45,10 +69,106 @@ export class SubscriptionsService {
 
   async createCheckoutSession(user: AuthUser, plan: "monthly" | "yearly") {
     if (process.env.RAZORPAY_KEY_ID) return this.createRazorpayCheckout(user, plan);
+    if (process.env.PAYPAL_CLIENT_ID) return this.createPaypalCheckout(user, plan);
     return this.createStripeCheckout(user, plan);
   }
 
-  // ---------------- Razorpay (equivalent PCI-compliant provider) ----------------
+  // ---------------- PayPal (instant sandbox, no KYC wall) ----------------
+
+  private async createPaypalCheckout(user: AuthUser, plan: "monthly" | "yearly") {
+    const token = await this.paypalToken();
+    const origin = process.env.CORS_ORIGIN ?? "http://localhost:3000";
+    const res = await fetch(`${this.paypalBase()}/v2/checkout/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            reference_id: `${user.id}:${plan}`, // returns with the order — our source of mapping
+            description: `Digital Heroes ${plan} plan`,
+            amount: {
+              currency_code: "USD",
+              value: plan === "monthly" ? "9.99" : "99.90",
+            },
+          },
+        ],
+        application_context: {
+          brand_name: "Digital Heroes",
+          user_action: "PAY_NOW",
+          return_url: `${origin}/dashboard/subscription?paypal=success`,
+          cancel_url: `${origin}/pricing?canceled=1`,
+        },
+      }),
+    });
+    if (!res.ok) throw new BadRequestException(`PayPal order failed: ${(await res.text()).slice(0, 200)}`);
+    const order = (await res.json()) as { id: string; links: { rel: string; href: string }[] };
+    const approve = order.links.find((l) => l.rel === "approve");
+    if (!approve) throw new BadRequestException("PayPal approval link missing");
+    return { checkoutUrl: approve.href };
+  }
+
+  /**
+   * Capture an approved PayPal order — called by the client after redirect.
+   * The capture response comes from an authenticated api-m.paypal.com call,
+   * so it is trusted. Activates the subscription in one transaction.
+   */
+  async capturePaypalOrder(userId: string, orderId: string) {
+    const token = await this.paypalToken();
+    const res = await fetch(`${this.paypalBase()}/v2/checkout/orders/${orderId}/capture`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    });
+    const data = (await res.json()) as {
+      status: string;
+      purchase_units?: {
+        reference_id?: string;
+        payments?: { captures?: { id: string; amount?: { value?: string; currency_code?: string } }[] };
+      }[];
+    };
+    if (data.status !== "COMPLETED") {
+      throw new BadRequestException(`PayPal capture status: ${data.status}`);
+    }
+
+    const unit = data.purchase_units?.[0];
+    const [refUserId, plan] = (unit?.reference_id ?? ":").split(":");
+    if (refUserId !== userId) throw new NotFoundException("Order does not belong to this user");
+    if (plan !== "monthly" && plan !== "yearly") throw new BadRequestException("Unknown plan");
+
+    const capture = unit?.payments?.captures?.[0];
+    const periodEnd = new Date(Date.now() + (plan === "monthly" ? 30 : 365) * 86400_000);
+
+    return this.prisma.$transaction(async (tx) => {
+      const subscription = await tx.subscription.upsert({
+        where: { stripeSubscriptionId: orderId }, // provider-neutral unique key
+        update: { status: "ACTIVE", plan: plan.toUpperCase() as PlanInterval, currentPeriodEnd: periodEnd },
+        create: {
+          userId,
+          stripeCustomerId: null,
+          stripeSubscriptionId: orderId,
+          plan: plan.toUpperCase() as PlanInterval,
+          status: "ACTIVE",
+          currentPeriodEnd: periodEnd,
+        },
+      });
+      if (capture?.id) {
+        await tx.payment.upsert({
+          where: { stripePaymentId: capture.id },
+          update: {},
+          create: {
+            userId,
+            stripePaymentId: capture.id,
+            amount: capture.amount?.value ?? (plan === "monthly" ? "9.99" : "99.90"),
+            currency: (capture.amount?.currency_code ?? "USD").toLowerCase(),
+            status: "succeeded",
+          },
+        });
+      }
+      return subscription;
+    });
+  }
+
+  // ---------------- Razorpay ----------------
 
   private async createRazorpayCheckout(user: AuthUser, plan: "monthly" | "yearly") {
     const planId = plan === "monthly" ? process.env.RAZORPAY_PLAN_MONTHLY : process.env.RAZORPAY_PLAN_YEARLY;
@@ -68,7 +188,7 @@ export class SubscriptionsService {
         plan_id: planId,
         total_count: plan === "monthly" ? 24 : 5,
         customer_notify: 1,
-        notes: { userId: user.id, plan }, // travels back in the webhook payload
+        notes: { userId: user.id, plan },
       }),
     });
     if (!res.ok) {
@@ -109,7 +229,7 @@ export class SubscriptionsService {
     return { checkoutUrl: session.url };
   }
 
-  /** Called ONLY from a verified payment webhook. Transactional. */
+  /** Called ONLY from a verified Stripe webhook. Transactional. */
   async syncFromStripe(sub: Stripe.Subscription): Promise<void> {
     const userId = sub.metadata?.userId;
     if (!userId) {
@@ -118,7 +238,6 @@ export class SubscriptionsService {
     }
     const status = this.mapStatus(sub.status);
     const item = sub.items.data[0];
-    // Stripe API 2025+: period bounds live on the subscription object, not the item
     const periodEnd = new Date(
       Number((sub as unknown as Record<string, unknown>).current_period_end ??
         (item as unknown as Record<string, unknown>)?.current_period_end ?? 0) * 1000,
