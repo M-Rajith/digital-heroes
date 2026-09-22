@@ -10,16 +10,20 @@ export class PaymentsController {
   constructor(private readonly payments: PaymentsService) {}
 
   /**
-   * Stripe webhook — the SOURCE OF TRUTH for subscription state.
-   * Signature verified; delivery is at-least-once so events are deduplicated.
+   * Payment provider webhook — the SOURCE OF TRUTH for subscription state.
+   * Provider is detected by which signature header arrives:
+   *   stripe-signature        -> Stripe
+   *   x-razorpay-signature    -> Razorpay (HMAC-SHA256, verified against raw body)
+   * Delivery is at-least-once; events are deduplicated by provider event id.
    */
   @Public()
   @Post("webhook")
   async webhook(
     @Req() req: RawBodyRequest<Request>,
-    @Headers("stripe-signature") signature: string,
+    @Headers("stripe-signature") stripeSignature: string | undefined,
+    @Headers("x-razorpay-signature") razorpaySignature: string | undefined,
   ) {
-    if (!req.rawBody || !signature) throw new BadRequestException("Invalid webhook payload");
-    return this.payments.handleWebhook(req.rawBody, signature);
+    if (!req.rawBody) throw new BadRequestException("Invalid webhook payload");
+    return this.payments.handleWebhook(req.rawBody, stripeSignature, razorpaySignature);
   }
 }

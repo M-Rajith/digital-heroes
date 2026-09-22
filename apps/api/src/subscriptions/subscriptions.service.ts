@@ -4,6 +4,12 @@ import Stripe from "stripe";
 import { PrismaService } from "../common/prisma/prisma.service";
 import { AuthUser } from "../common/decorators/current-user.decorator";
 
+/**
+ * Payment provider is selected by env vars:
+ *   RAZORPAY_KEY_ID set  -> Razorpay hosted subscriptions (India-friendly)
+ *   otherwise            -> Stripe Checkout + webhooks
+ * Both paths end in the same DB state; the webhook is the source of truth.
+ */
 @Injectable()
 export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
@@ -38,6 +44,43 @@ export class SubscriptionsService {
   }
 
   async createCheckoutSession(user: AuthUser, plan: "monthly" | "yearly") {
+    if (process.env.RAZORPAY_KEY_ID) return this.createRazorpayCheckout(user, plan);
+    return this.createStripeCheckout(user, plan);
+  }
+
+  // ---------------- Razorpay (equivalent PCI-compliant provider) ----------------
+
+  private async createRazorpayCheckout(user: AuthUser, plan: "monthly" | "yearly") {
+    const planId = plan === "monthly" ? process.env.RAZORPAY_PLAN_MONTHLY : process.env.RAZORPAY_PLAN_YEARLY;
+    if (!planId) throw new BadRequestException("Razorpay plan not configured");
+
+    const dbUser = await this.prisma.user.findUnique({ where: { id: user.id } });
+    if (!dbUser) throw new BadRequestException("User not found");
+
+    const auth = Buffer.from(
+      `${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`,
+    ).toString("base64");
+
+    const res = await fetch("https://api.razorpay.com/v1/subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Basic ${auth}` },
+      body: JSON.stringify({
+        plan_id: planId,
+        total_count: plan === "monthly" ? 24 : 5,
+        customer_notify: 1,
+        notes: { userId: user.id, plan }, // travels back in the webhook payload
+      }),
+    });
+    if (!res.ok) {
+      throw new BadRequestException(`Razorpay error: ${(await res.text()).slice(0, 200)}`);
+    }
+    const data = (await res.json()) as { id: string; short_url: string };
+    return { checkoutUrl: data.short_url };
+  }
+
+  // ---------------- Stripe ----------------
+
+  private async createStripeCheckout(user: AuthUser, plan: "monthly" | "yearly") {
     const priceId =
       plan === "monthly" ? process.env.STRIPE_PRICE_MONTHLY : process.env.STRIPE_PRICE_YEARLY;
     if (!priceId) throw new BadRequestException("Stripe price not configured");
@@ -66,7 +109,7 @@ export class SubscriptionsService {
     return { checkoutUrl: session.url };
   }
 
-  /** Called ONLY from the verified Stripe webhook. Transactional. */
+  /** Called ONLY from a verified payment webhook. Transactional. */
   async syncFromStripe(sub: Stripe.Subscription): Promise<void> {
     const userId = sub.metadata?.userId;
     if (!userId) {
