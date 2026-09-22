@@ -6,9 +6,9 @@ describe("payments webhook", () => {
     const prisma: any = { webhookEvent: { findUnique: jest.fn() } };
     const subs: any = { syncFromStripe: jest.fn() };
     const svc = new PaymentsService(prisma, subs);
-    await expect(svc.handleWebhook(Buffer.from("{}"), "bad_sig")).rejects.toThrow(
-      BadRequestException,
-    );
+    await expect(
+      svc.handleWebhook(Buffer.from("{}"), { "stripe-signature": "bad_sig" }),
+    ).rejects.toThrow(BadRequestException);
     expect(subs.syncFromStripe).not.toHaveBeenCalled();
   });
 
@@ -26,7 +26,7 @@ describe("payments webhook", () => {
     (svc as any).stripe = {
       webhooks: { constructEvent: jest.fn().mockReturnValue({ id: "evt_1", type: "unknown" }) },
     };
-    const res = await svc.handleWebhook(Buffer.from("{}"), "sig");
+    const res = await svc.handleWebhook(Buffer.from("{}"), { "stripe-signature": "sig" });
     expect(res).toEqual({ received: true, duplicate: true });
     expect(prisma.webhookEvent.create).not.toHaveBeenCalled();
     expect(subs.syncFromStripe).not.toHaveBeenCalled();
