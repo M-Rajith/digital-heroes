@@ -1,4 +1,5 @@
 FROM node:20-bookworm-slim AS build
+RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY apps/api/package.json ./
 COPY packages/database/prisma ./prisma
@@ -8,6 +9,7 @@ COPY apps/api ./
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime
+RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production
 COPY apps/api/package.json ./
